@@ -58,16 +58,3 @@ This project is based on and includes code from:
 * G8PTN, Dave:       https://github.com/G8PTN/ATS_MINI
 
 All original copyrights and licenses are retained.
-
-## Releases
-
-Check out the [Releases](https://github.com/B5-Software/ats-mini-with-galgame/releases) page.
-
-## Documentation
-
-Hardware, software, and flashing documentation is available at <https://esp32-si4732.github.io/ats-mini/> (original project).
-
-## Discuss
-
-* [GitHub Discussions](https://github.com/esp32-si4732/ats-mini/discussions)
-
