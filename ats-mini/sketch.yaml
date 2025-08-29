@@ -1,0 +1,34 @@
+profiles:
+  esp32s3-ospi:
+    # If you change this line, change it in build.yml as well
+    fqbn: esp32:esp32:esp32s3:CDCOnBoot=cdc,FlashSize=16M,PSRAM=opi,CPUFreq=80,USBMode=hwcdc,FlashMode=qio,PartitionScheme=custom,DebugLevel=none
+    platforms:
+      - platform: esp32:esp32 (3.3.0)
+    libraries:
+      - PU2CLR SI4735 (2.1.8)
+      - TFT_eSPI (2.5.43)
+  # 移除异步 Web 服务器相关库 (硬编码 WiFi, 不再需要配置网页)
+      - NTPClient (3.2.1)
+      - NimBLE-Arduino (2.3.2)
+      - NuS-NimBLE-Serial (4.1.0)
+      - ArduinoJson (6.21.3)
+      - TJpg_Decoder (1.0.8)
+      - PNGdec (1.0.1)
+
+  esp32s3-qspi:
+    # If you change this line, change it in build.yml as well
+    fqbn: esp32:esp32:esp32s3:CDCOnBoot=cdc,FlashSize=16M,PSRAM=enabled,CPUFreq=80,USBMode=hwcdc,FlashMode=qio,PartitionScheme=custom,DebugLevel=none
+    platforms:
+      - platform: esp32:esp32 (3.3.0)
+    libraries:
+      - PU2CLR SI4735 (2.1.8)
+      - TFT_eSPI (2.5.43)
+  # 移除异步 Web 服务器相关库 (硬编码 WiFi, 不再需要配置网页)
+      - NTPClient (3.2.1)
+      - NimBLE-Arduino (2.3.2)
+      - NuS-NimBLE-Serial (4.1.0)
+      - ArduinoJson (6.21.3)
+      - TJpg_Decoder (1.0.8)
+      - PNGdec (1.0.1)
+
+default_profile: esp32s3-ospi
