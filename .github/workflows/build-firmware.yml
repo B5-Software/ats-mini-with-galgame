@@ -1,0 +1,81 @@
+name: Build ESP32-S3 firmware
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "ats-mini/**"
+      - ".github/workflows/build-firmware.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compile:
+    name: Compile ${{ matrix.suffix }} firmware
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - profile: esp32s3-ospi
+            suffix: ospi
+          - profile: esp32s3-qspi
+            suffix: qspi
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Arduino CLI
+        uses: arduino/setup-arduino-cli@v2
+
+      - name: Update board and library indexes
+        run: |
+          arduino-cli config init
+          arduino-cli config add board_manager.additional_urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli core update-index
+          arduino-cli lib update-index
+
+      - name: Compile from the pinned sketch profile
+        env:
+          PROFILE: ${{ matrix.profile }}
+        run: |
+          set -euo pipefail
+          arduino-cli compile \
+            --profile "$PROFILE" \
+            --output-dir "$RUNNER_TEMP/ats-mini-build" \
+            --build-property "compiler.cpp.extra_flags=-DUSER_SETUP_LOADED -include $GITHUB_WORKSPACE/ats-mini/tft_setup.h" \
+            --build-property "compiler.c.extra_flags=-DUSER_SETUP_LOADED -include $GITHUB_WORKSPACE/ats-mini/tft_setup.h" \
+            --warnings default \
+            ats-mini
+          test -s "$RUNNER_TEMP/ats-mini-build/ats-mini.ino.bin"
+
+      - name: Prepare downloadable firmware binaries
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          find "$RUNNER_TEMP/ats-mini-build" -type f -name '*.bin' -exec cp {} dist/ \;
+          test -s dist/ats-mini.ino.bin
+          (cd dist && sha256sum ./*.bin > SHA256SUMS.txt)
+          cat > dist/README.txt <<'EOF'
+          ATS Mini with GalGame - ESP32-S3 firmware
+          ==========================================
+          Target flash size: 16 MB
+          Select the O(S)PI or Q(S)PI artifact matching your receiver's PSRAM.
+          ats-mini.ino.bin is the application binary (OTA / app-only).
+          Other *.bin files (if present) support serial flashing.
+          Never flash a 16 MB image onto a receiver with incompatible hardware.
+          The public source intentionally contains no SiliconFlow API key.
+          Build is automated; hardware functionality has not been verified.
+          EOF
+          ls -lh dist/
+
+      - name: Upload firmware archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: ats-mini-galgame-${{ matrix.suffix }}-16MB
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
