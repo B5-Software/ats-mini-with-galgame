@@ -4,6 +4,10 @@
 #include "Utils.h"
 #include "Menu.h"
 #include "Draw.h"
+#include "AiSettings.h"
+
+// Always include the on-device configuration server in published firmware.
+#define ENABLE_ASYNC_WEB 1
 
 #include <WiFi.h>
 #include <WiFiUdp.h>
@@ -31,7 +35,7 @@
 // Access Point (AP) mode settings
 //
 static const char *apSSID    = RECEIVER_NAME;
-static const char *apPWD     = 0;       // No password
+// AP password is the generated per-device WebUI password (see loadWebCredentials).
 static const int   apChannel = 10;      // WiFi channel number (1..13)
 static const bool  apHideMe  = false;   // TRUE: disable SSID broadcast
 static const int   apClients = 3;       // Maximum simultaneous connected clients
@@ -44,6 +48,10 @@ static uint32_t connectTime = millis();
 // Settings
 String loginUsername = "";
 String loginPassword = "";
+static String webCsrfToken;
+static bool webServerStarted = false;
+static void loadWebCredentials();
+static bool webAuthenticate(AsyncWebServerRequest *request);
 
 // AsyncWebServer object (only if enabled)
 #ifdef ENABLE_ASYNC_WEB
@@ -72,6 +80,9 @@ static const String webThemeSelector();
 static const String webRadioPage();
 static const String webMemoryPage();
 static const String webConfigPage();
+static const String webAiPage();
+static void webSetAi(AsyncWebServerRequest *request);
+static String htmlEscape(String value);
 #endif
 
 //
@@ -148,6 +159,7 @@ void netStop()
 //
 void netInit(uint8_t netMode, bool showStatus)
 {
+  loadWebCredentials();
   // 确保网络命名空间存在
   if(!prefs.begin("network", false, STORAGE_PARTITION)) {
     Serial.println("[NETWORK] Failed to create/open network preferences namespace");
@@ -255,12 +267,12 @@ static bool wifiInitAP()
   IPAddress subnet(255, 255, 255, 0);
 
   // Start as access point (AP)
-  WiFi.softAP(apSSID, apPWD, apChannel, apHideMe, apClients);
+  WiFi.softAP(apSSID, loginPassword.c_str(), apChannel, apHideMe, apClients);
   WiFi.softAPConfig(ip, gateway, subnet);
 
   drawScreen(
-    ("Use Access Point " + String(apSSID)).c_str(),
-    ("IP : " + WiFi.softAPIP().toString() + " or atsmini.local").c_str()
+    ("AP " + String(apSSID) + "  10.1.1.1").c_str(),
+    ("WiFi password: " + loginPassword).c_str()
   );
 
   ajaxInterval = 2500;
@@ -418,41 +430,100 @@ static bool wifiConnect()
   return(true);
 }
 
-// ---------------- Web Server (only if ENABLE_ASYNC_WEB) ----------------
+// A per-device random password protects the WebUI on both AP and station networks.
+// It is displayed on the receiver at first setup and whenever AP mode starts.
+static void loadWebCredentials() {
+  Preferences webPrefs;
+  if (!webPrefs.begin("network", false, STORAGE_PARTITION)) return;
+  loginUsername = webPrefs.getString("loginusername", "admin");
+  loginPassword = webPrefs.getString("loginpassword", "");
+  if (!loginUsername.length() || loginPassword.length() < 8) {
+    loginUsername = "admin";
+    loginPassword = String((uint32_t)esp_random(), HEX) +
+                    String((uint32_t)esp_random(), HEX) +
+                    String((uint32_t)esp_random(), HEX);
+    webPrefs.putString("loginusername", loginUsername);
+    webPrefs.putString("loginpassword", loginPassword);
+    Serial.println("[WebUI] New admin credentials generated (see device screen)");
+    drawScreen("WebUI login: admin", ("Password: " + loginPassword).c_str());
+    delay(8000); // Physical access is required to see this value.
+  }
+  webPrefs.end();
+  if (!webCsrfToken.length()) {
+    webCsrfToken = String((uint32_t)esp_random(), HEX) +
+                   String((uint32_t)esp_random(), HEX);
+  }
+}
+
+#ifdef ENABLE_ASYNC_WEB
+static bool webAuthenticate(AsyncWebServerRequest *request) {
+  if (loginUsername.length() && loginPassword.length() &&
+      request->authenticate(loginUsername.c_str(), loginPassword.c_str())) return true;
+  request->requestAuthentication();
+  return false;
+}
+
+static bool webValidPost(AsyncWebServerRequest *request) {
+  if (!webAuthenticate(request)) return false;
+  if (request->method() != HTTP_POST || !request->hasParam("csrf", true) ||
+      request->getParam("csrf", true)->value() != webCsrfToken) {
+    request->send(403, "text/plain", "Invalid POST or CSRF token");
+    return false;
+  }
+  return true;
+}
+
+static String htmlEscape(String value) {
+  value.replace("&", "&amp;");
+  value.replace("<", "&lt;");
+  value.replace(">", "&gt;");
+  value.replace("\"", "&quot;");
+  value.replace("'", "&#39;");
+  return value;
+}
+#endif
+
+// ---------------- Web Server ----------------
 #ifdef ENABLE_ASYNC_WEB
 // Initialize internal web server
 static void webInit()
 {
-  server.on("/", HTTP_ANY, [] (AsyncWebServerRequest *request) {
+  if (webServerStarted) return;
+  server.on("/", HTTP_GET, [] (AsyncWebServerRequest *request) {
     request->send(200, "text/html", webRadioPage());
   });
 
-  server.on("/memory", HTTP_ANY, [] (AsyncWebServerRequest *request) {
+  server.on("/memory", HTTP_GET, [] (AsyncWebServerRequest *request) {
     request->send(200, "text/html", webMemoryPage());
   });
 
-  server.on("/config", HTTP_ANY, [] (AsyncWebServerRequest *request) {
-    if(loginUsername != "" && loginPassword != "")
-      if(!request->authenticate(loginUsername.c_str(), loginPassword.c_str()))
-        return request->requestAuthentication();
-    request->send(200, "text/html", webConfigPage());
+  server.on("/config", HTTP_GET, [] (AsyncWebServerRequest *request) {
+    if (!webAuthenticate(request)) return;
+    request->send(200, "text/html; charset=utf-8", webConfigPage());
   });
+  server.on("/ai", HTTP_GET, [] (AsyncWebServerRequest *request) {
+    if (!webAuthenticate(request)) return;
+    request->send(200, "text/html; charset=utf-8", webAiPage());
+  });
+  server.on("/ai", HTTP_POST, webSetAi);
 
   server.onNotFound([] (AsyncWebServerRequest *request) {
     request->send(404, "text/plain", "Not found");
   });
 
   // This method saves configuration form contents
-  server.on("/setconfig", HTTP_ANY, webSetConfig);
+  server.on("/setconfig", HTTP_POST, webSetConfig);
 
   // Start web server
   server.begin();
+  webServerStarted = true;
 }
 #endif // ENABLE_ASYNC_WEB
 
 #ifdef ENABLE_ASYNC_WEB
 void webSetConfig(AsyncWebServerRequest *request)
 {
+  if (!webValidPost(request)) return;
   uint32_t prefsSave = 0;
 
   // Start modifying preferences
@@ -461,11 +532,14 @@ void webSetConfig(AsyncWebServerRequest *request)
   // Save user name and password
   if(request->hasParam("username", true) && request->hasParam("password", true))
   {
-    loginUsername = request->getParam("username", true)->value();
-    loginPassword = request->getParam("password", true)->value();
-
-    prefs.putString("loginusername", loginUsername);
-    prefs.putString("loginpassword", loginPassword);
+    String user = request->getParam("username", true)->value();
+    String pass = request->getParam("password", true)->value();
+    if(user.length() > 0 && user.length() < 64 && pass.length() >= 8 && pass.length() < 64) {
+      loginUsername = user;
+      loginPassword = pass;
+      prefs.putString("loginusername", loginUsername);
+      prefs.putString("loginpassword", loginPassword);
+    }
   }
 
   // Save SSIDs and their passwords
@@ -506,7 +580,8 @@ void webSetConfig(AsyncWebServerRequest *request)
 
   // Save scroll direction, tuning hold off, and menu zoom
   scrollDirection = request->hasParam("scroll", true)? -1 : 1;
-  tuneHoldOff     = request->getParam("holdoff", true)->value().toInt();
+  if (request->hasParam("holdoff", true))
+    tuneHoldOff = request->getParam("holdoff", true)->value().toInt();
   zoomMenu        = request->hasParam("zoom", true);
   prefsSave |= SAVE_SETTINGS;
 
@@ -529,10 +604,7 @@ void webSetConfig(AsyncWebServerRequest *request)
 #ifdef ENABLE_ASYNC_WEB
 static const String webInputField(const String &name, const String &value, bool pass)
 {
-  String newValue(value);
-
-  newValue.replace("\"", "&quot;");
-  newValue.replace("'", "&apos;");
+  String newValue = htmlEscape(value);
 
   return(
     "<INPUT TYPE='" + String(pass? "PASSWORD":"TEXT") + "' NAME='" +
@@ -668,7 +740,7 @@ static const String webRadioPage()
   return webPage(
 "<H1>ATS-Mini Pocket Receiver</H1>"
 "<P ALIGN='CENTER'>"
-  "<A HREF='/memory'>Memory</A>&nbsp;|&nbsp;<A HREF='/config'>Config</A>"
+  "<A HREF='/memory'>Memory</A>&nbsp;|&nbsp;<A HREF='/config'>Config</A>&nbsp;|&nbsp;<A HREF='/ai'>AI Models</A>"
 "</P>"
 "<TABLE COLUMNS=2>"
 "<TR>"
@@ -731,7 +803,7 @@ static const String webMemoryPage()
   return webPage(
 "<H1>ATS-Mini Pocket Receiver Memory</H1>"
 "<P ALIGN='CENTER'>"
-  "<A HREF='/'>Status</A>&nbsp;|&nbsp;<A HREF='/config'>Config</A>"
+  "<A HREF='/'>Status</A>&nbsp;|&nbsp;<A HREF='/config'>Config</A>&nbsp;|&nbsp;<A HREF='/ai'>AI Models</A>"
 "</P>"
 "<TABLE COLUMNS=2>" + items + "</TABLE>"
 );
@@ -753,8 +825,10 @@ const String webConfigPage()
 "<P ALIGN='CENTER'>"
   "<A HREF='/'>Status</A>"
   "&nbsp;|&nbsp;<A HREF='/memory'>Memory</A>"
+  "&nbsp;|&nbsp;<A HREF='/ai'>AI Models</A>"
 "</P>"
 "<FORM ACTION='/setconfig' METHOD='POST'>"
+  "<INPUT TYPE='hidden' NAME='csrf' VALUE='" + htmlEscape(webCsrfToken) + "'>"
   "<TABLE COLUMNS=2>"
   "<TR><TH COLSPAN=2 CLASS='HEADING'>Login Credentials</TH></TR>"
   "<TR>"
@@ -763,7 +837,7 @@ const String webConfigPage()
   "</TR>"
   "<TR>"
     "<TD CLASS='LABEL'>Password</TD>"
-    "<TD>" + webInputField("password", loginPassword, true) + "</TD>"
+    "<TD>" + webInputField("password", "", true) + " (enter a new password to change; 8+ characters)</TD>"
   "</TR>"
   "<TR><TH COLSPAN=2 CLASS='HEADING'>WiFi Network 1</TH></TR>"
   "<TR>"
@@ -826,5 +900,92 @@ tuneHoldOff + "' MIN='0' MAX='255'></TD>"
   "</TABLE>"
 "</FORM>"
 );
+}
+#endif // ENABLE_ASYNC_WEB
+
+
+#ifdef ENABLE_ASYNC_WEB
+static String aiInput(const String &id, const String &value) {
+  return "<input id='" + id + "' name='" + id + "' type='text' maxlength='199' required"
+         " style='width:100%;box-sizing:border-box' value='" + htmlEscape(value) + "'>";
+}
+
+static const String webAiPage() {
+  AiServiceSettings chat = aiLoadSettings(AiService::Chat);
+  AiServiceSettings image = aiLoadSettings(AiService::Image);
+  String page = R"html(
+    <h1>GalGame AI Providers</h1>
+    <p style='text-align:center'><a href='/'>Status</a> | <a href='/config'>WiFi Settings</a></p>
+    <p style='max-width:740px;margin:1em auto'>Configure text and image models independently.
+       OpenAI-compatible JSON APIs and SiliconFlow are supported. Keys are stored only in the
+       device's NVS storage, never in the public firmware. Use a trusted network.</p>
+  )html";
+  page += "<form method='POST' action='/ai'><input type='hidden' name='csrf' value='" +
+          htmlEscape(webCsrfToken) + "'><input type='hidden' name='service' value='chat'>";
+  page += "<table><tr><th colspan='2' class='HEADING'>Chat / Narrative Model</th></tr>";
+  page += "<tr><td>Provider preset</td><td><select onchange=\"document.getElementById('chat_url').value=this.value\">"
+          "<option value=''>Select (or use your own URL)</option>"
+          "<option value='https://api.siliconflow.cn/v1/chat/completions'>SiliconFlow</option>"
+          "<option value='https://api.openai.com/v1/chat/completions'>OpenAI</option>"
+          "<option value='https://api.deepseek.com/chat/completions'>DeepSeek</option>"
+          "<option value='https://openrouter.ai/api/v1/chat/completions'>OpenRouter</option>"
+          "</select></td></tr>";
+  page += "<tr><td>Chat API URL</td><td>" + aiInput("chat_url", chat.url) + "</td></tr>";
+  page += "<tr><td>Chat model ID</td><td>" + aiInput("chat_model", chat.model) + "</td></tr>";
+  page += "<tr><td>API key</td><td><input type='password' name='chat_key' autocomplete='new-password' maxlength='511' "
+          "placeholder='Leave empty to keep existing key'> " +
+          String(chat.apiKey.length() ? "Saved" : "Not set") + "</td></tr>";
+  page += "<tr><td>Remove saved key</td><td><input type='checkbox' name='clear_key' value='1'></td></tr>";
+  page += "<tr><td colspan='2' style='text-align:center'><button type='submit'>Save chat model</button></td></tr></table></form>";
+  page += "<form method='POST' action='/ai'><input type='hidden' name='csrf' value='" +
+          htmlEscape(webCsrfToken) + "'><input type='hidden' name='service' value='image'>";
+  page += "<table><tr><th colspan='2' class='HEADING'>Image Generation Model (optional)</th></tr>";
+  page += "<tr><td>Provider preset</td><td><select onchange=\"document.getElementById('img_url').value=this.value\">"
+          "<option value=''>Select (or use your own URL)</option>"
+          "<option value='https://api.siliconflow.cn/v1/images/generations'>SiliconFlow</option>"
+          "<option value='https://api.openai.com/v1/images/generations'>OpenAI</option>"
+          "</select></td></tr>";
+  page += "<tr><td>Image API URL</td><td>" + aiInput("img_url", image.url) + "</td></tr>";
+  page += "<tr><td>Image model ID</td><td>" + aiInput("img_model", image.model) + "</td></tr>";
+  page += "<tr><td>Request format</td><td><select name='img_format'>"
+          "<option value='siliconflow'" + String(image.imageFormat != "openai" ? " selected" : "") +
+          ">SiliconFlow (image_size: 480x288)</option>"
+          "<option value='openai'" + String(image.imageFormat == "openai" ? " selected" : "") +
+          ">OpenAI compatible (size: 1024x1024)</option></select></td></tr>";
+  page += "<tr><td>API key</td><td><input type='password' name='img_key' autocomplete='new-password' maxlength='511' "
+          "placeholder='Leave empty to keep existing key'> " +
+          String(image.apiKey.length() ? "Saved" : "Not set") + "</td></tr>";
+  page += "<tr><td>Remove saved key</td><td><input type='checkbox' name='clear_key' value='1'></td></tr>";
+  page += "<tr><td colspan='2' style='text-align:center'><button type='submit'>Save image model</button></td></tr></table></form>";
+  page += "<p style='text-align:center'>A missing image model disables image requests but story generation still works.</p>"
+          "<p style='text-align:center'>Keys are sent to the configured HTTPS host as Bearer tokens. "
+          "HTTP URLs are allowed only for keyless local services. "
+          "Do not expose this device's HTTP WebUI to the public internet.</p>";
+  return webPage(page);
+}
+
+static void webSetAi(AsyncWebServerRequest *request) {
+  if (!webValidPost(request)) return;
+  auto field = [request](const char *name) -> String {
+    return request->hasParam(name, true) ? request->getParam(name, true)->value() : String();
+  };
+  String service = field("service");
+  if (service != "chat" && service != "image") {
+    request->send(400, "text/plain", "Unknown AI service");
+    return;
+  }
+  bool isChat = service == "chat";
+  String error;
+  bool ok = aiSaveSettings(isChat ? AiService::Chat : AiService::Image,
+                           field(isChat ? "chat_url" : "img_url"),
+                           field(isChat ? "chat_model" : "img_model"),
+                           field(isChat ? "chat_key" : "img_key"),
+                           request->hasParam("clear_key", true),
+                           isChat ? String() : field("img_format"), error);
+  if (!ok) {
+    request->send(400, "text/plain; charset=utf-8", error);
+    return;
+  }
+  request->redirect("/ai");
 }
 #endif // ENABLE_ASYNC_WEB

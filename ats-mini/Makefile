@@ -11,7 +11,7 @@ DEBUG_LEVEL ?= 0
 #
 # HALF_STEP       : Enable encoder half-steps
 #
-DEFINES = -DDEBUG=$(DEBUG_LEVEL)
+DEFINES = -DDEBUG=$(DEBUG_LEVEL) -DENABLE_ASYNC_WEB=1
 
 ifdef HALF_STEP
         DEFINES += -DHALF_STEP
