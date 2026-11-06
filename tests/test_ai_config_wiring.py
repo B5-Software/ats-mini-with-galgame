@@ -38,5 +38,12 @@ class AiConfigWiring(unittest.TestCase):
         self.assertIn('WiFi.softAP(apSSID, loginPassword.c_str()', source)
         self.assertIn("static const String webAiPage()", source)
 
+    def test_ai_http_uses_verified_tls(self):
+        source = read("AIGalGame.cpp")
+        self.assertIn("tls.setCACertBundle(root_bundle_start", source)
+        self.assertIn("beginVerifiedHttp(http, plain, tls, url)", source)
+        self.assertIn("beginVerifiedHttp(hc, imagePlain, imageTls, lastImageUrl)", source)
+        self.assertNotIn("bool beginResult = http.begin(url);", source)
+
 if __name__ == "__main__":
     unittest.main()
