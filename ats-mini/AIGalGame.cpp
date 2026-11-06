@@ -2,6 +2,7 @@
 #include "Common.h"
 #include "AIGalGame.h"
 #include "AiConfig.h"
+#include "AiSettings.h"
 #include "Themes.h"
 #include "Draw.h"
 #include "Storage.h"
@@ -218,9 +219,8 @@ void galgameLoadSettings(){
     maxContextRounds = prefs.getUChar("maxRounds", maxContextRounds);
   }
 
-  // 不再支持运行时修改 API Key, 忽略 apiKey 键
   prefs.end();
-  GG_LOG("GalGame settings loaded: maxRounds=%d (API key hardcoded)", maxContextRounds);
+  GG_LOG("GalGame settings loaded: maxRounds=%d", maxContextRounds);
 }
 
 // Utility paths
@@ -486,9 +486,11 @@ static String buildSystemPrompt() {
   return sys;
 }
 
-static bool httpPostJSON(const char* url, const String &payload, String &response) {
+static bool httpPostJSON(const AiServiceSettings &provider, const String &payload, String &response) {
+  const String &url = provider.url;
+  if (!provider.ready()) { response = "AI endpoint/model not configured"; return false; }
   GG_LOG_HTTP("=== HTTP POST DEBUG START ===");
-  GG_LOG_HTTP("Target URL: %s", url);
+  GG_LOG_HTTP("Target URL: %s", url.c_str());
   GG_LOG_HTTP("Payload size: %d bytes", payload.length());
   GG_LOG_HTTP("Free heap: %d bytes", ESP.getFreeHeap());
   GG_LOG_HTTP("WiFi status: %d (%s)", WiFi.status(), 
@@ -521,10 +523,10 @@ static bool httpPostJSON(const char* url, const String &payload, String &respons
   }
   
   http.addHeader("Content-Type","application/json");
-  http.addHeader("Authorization", String("Bearer ")+AI_API_KEY); // 固定密钥
+  if (provider.apiKey.length()) http.addHeader("Authorization", String("Bearer ")+provider.apiKey);
   http.setTimeout(30000); // 30 second timeout
   
-  GG_LOG_HTTP("Headers set, API key length: %d", strlen(AI_API_KEY));
+  GG_LOG_HTTP("Headers set, API key configured: %s", provider.apiKey.length() ? "yes" : "no");
   GG_LOG_HTTP("Request payload preview (first 200 chars): %.200s", payload.c_str());
   
   GG_LOG_HTTP("Sending POST request...");
@@ -596,6 +598,7 @@ static void parseAndStoreImage(const String &json) {
   DeserializationError jerr = deserializeJson(dj, json);
   if(!jerr && dj.is<JsonObject>()){
     JsonArray arr = dj["images"].as<JsonArray>();
+    if (arr.isNull()) arr = dj["data"].as<JsonArray>();
     if(!arr.isNull() && arr.size()>0){
       JsonObject first = arr[0].as<JsonObject>();
       if(first.containsKey("url")){
@@ -607,7 +610,7 @@ static void parseAndStoreImage(const String &json) {
           hc.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
           hc.addHeader("Accept","image/jpeg,application/octet-stream;q=0.9,*/*;q=0.5");
           // 某些服务需要鉴权才能访问生成文件
-          if(AI_API_KEY && strlen(AI_API_KEY)>4) hc.addHeader("Authorization", String("Bearer ")+AI_API_KEY);
+          // Never leak the AI API key to arbitrary image/CDN URLs.
           hc.addHeader("User-Agent","ATS-MINI-GalGame/1.0");
           int code = hc.GET();
           String ctype = hc.header("Content-Type");
@@ -714,10 +717,12 @@ static void startSummarizeAsync(){
 
 static void doSummarizeNow(){
   if(fetching) return; fetching=true; fetchStatus="Summarizing...";
-  DynamicJsonDocument jd(8192); jd["model"]=AI_CHAT_MODEL; JsonArray msgs=jd.createNestedArray("messages");
+  AiServiceSettings chat = aiLoadSettings(AiService::Chat);
+  if (!chat.ready()) { fetching=false; summarizePending=false; fetchStatus="Set AI in /ai"; return; }
+  DynamicJsonDocument jd(8192); jd["model"]=chat.model; JsonArray msgs=jd.createNestedArray("messages");
   JsonObject sys=msgs.createNestedObject(); sys["role"]="system"; sys["content"]="Summarize narrative facts into concise bullet points (max 12)";
   JsonObject u=msgs.createNestedObject(); u["role"]="user"; u["content"] = sessionLog.substring(sessionLog.length()>6000? sessionLog.length()-6000:0);
-  String payload; serializeJson(jd,payload); String resp; if(httpPostJSON(AI_CHAT_URL,payload,resp)) {
+  String payload; serializeJson(jd,payload); String resp; if(httpPostJSON(chat,payload,resp)) {
     int nl=resp.indexOf('\n'); String body = (nl>0)? resp.substring(nl+1):resp; DynamicJsonDocument dr(8192); if(!deserializeJson(dr,body)) {
       String add = dr["choices"][0]["message"]["content"].as<String>();
       if(add.length()) { knowledgeBase += "\n"+add; if(knowledgeBase.length()>6000) knowledgeBase.remove(0, knowledgeBase.length()-6000); saveMeta(); lastAIText="Knowledge +"; }
@@ -1020,12 +1025,14 @@ static void requestAI() {
   if(fetching || summarizePending) return; // don't mix
   aiRetryScheduled=false;
   fetching=true; lastFetchTs=millis(); fetchStatus="Querying LLM..."; lastAIText=""; imagePrompt=""; lastAIReasoning=""; lastAIMemoryAdd=""; parseRetryCount=0;
-  DynamicJsonDocument jd(12288); jd["model"] = AI_CHAT_MODEL; JsonArray msgs = jd.createNestedArray("messages");
+  AiServiceSettings chat = aiLoadSettings(AiService::Chat);
+  if (!chat.ready()) { fetching=false; fetchStatus="Set chat URL/model at /ai"; return; }
+  DynamicJsonDocument jd(12288); jd["model"] = chat.model; JsonArray msgs = jd.createNestedArray("messages");
   JsonObject sys = msgs.createNestedObject(); sys["role"]="system"; sys["content"]=buildSystemPrompt();
   for(auto &e: context) { JsonObject m=msgs.createNestedObject(); m["role"]=e.role; m["content"]=e.content; }
   JsonObject userQ = msgs.createNestedObject(); userQ["role"]="user"; userQ["content"]="Continue the interactive visual novel. Produce JSON ONLY (no markdown).";
   String payload; serializeJson(jd,payload);
-  String resp; bool ok = httpPostJSON(AI_CHAT_URL, payload, resp);
+  String resp; bool ok = httpPostJSON(chat, payload, resp);
   int statusCode = -1; if(resp.length()){ int nl=resp.indexOf('\n'); if(nl>0) statusCode = resp.substring(0,nl).toInt(); }
   if(!ok){
     bool retryable = (statusCode==429) || (statusCode>=500 && statusCode<600) || statusCode==-1;
@@ -1075,12 +1082,22 @@ static void requestAI() {
   }
   if(pendingOptions.empty()) fetchStatus+=" | no opts"; else fetchStatus += " | "+String(pendingOptions.size())+" opt";
   optionIdx=0; appendContext("assistant", lastAIText); sessionLog += lastAIText + "\n";
-  if(imagePrompt.length()){
+  AiServiceSettings image = aiLoadSettings(AiService::Image);
+  if (imagePrompt.length() && image.ready()) {
     fetchStatus="Gen Img..."; ggUILogOverlayf("IMG start %d", imagePrompt.length()); mirrorOverlayToStatus();
     haveImage=false; imageDecoded=false; lastImageB64="";
-  DynamicJsonDocument ji(4096); ji["model"]=AI_IMG_MODEL; ji["prompt"]=imagePrompt; ji["image_size"]="480x288"; ji["num_inference_steps"]=20; ji["guidance_scale"]=7.5; ji["batch_size"]=1; // Kolors spec (480x288)
+  DynamicJsonDocument ji(4096); ji["model"]=image.model; ji["prompt"]=imagePrompt;
+  if (image.imageFormat == "openai") {
+    ji["size"] = "1024x1024";
+    ji["n"] = 1;
+  } else {
+    ji["image_size"] = "480x288";
+    ji["num_inference_steps"] = 20;
+    ji["guidance_scale"] = 7.5;
+    ji["batch_size"] = 1;
+  }
     String ip; serializeJson(ji,ip); ggUILogOverlayf("IMG post %d", ip.length()); mirrorOverlayToStatus();
-    String ir; if(httpPostJSON(AI_IMAGE_URL, ip, ir)) {
+    String ir; if(httpPostJSON(image, ip, ir)) {
       ggUILogOverlayf("IMG resp %d", ir.length()); mirrorOverlayToStatus();
       int nli=ir.indexOf('\n'); String bodyi=(nli>0)? ir.substring(nli+1):ir; // 修正变量名错误
       File f=LittleFS.open(currentProject.dir+"/last_image.json","w"); if(f){ f.print(bodyi); f.close(); }
@@ -1097,8 +1114,9 @@ static void requestAI() {
     } else { ggUILogOverlayf("IMG netfail"); mirrorOverlayToStatus(); }
   if(haveImage) fetchStatus = String("Img OK ") + String((unsigned long)lastImageBytes) + "B"; else if(fetchStatus.startsWith("Gen Img")) fetchStatus = "Img Fail"; // 保留结果
   } else {
-    ggUILogOverlayf("IMG skip no prompt"); mirrorOverlayToStatus();
-    fetchStatus="OK";
+    ggUILogOverlayf(image.ready() ? "IMG skip no prompt" : "IMG skipped: configure /ai");
+    mirrorOverlayToStatus();
+    fetchStatus = image.ready() ? "OK" : "Text OK (image not configured)";
   }
   if(!imagePrompt.length() || haveImage || (!haveImage && imagePrompt.length())) { fetching=false; saveMeta(); }
 }
@@ -1117,8 +1135,10 @@ static void newProjectGenerate() {
   currentProject.name = "";
   currentProject.synopsis = "";
   
+  AiServiceSettings chat = aiLoadSettings(AiService::Chat);
+  if (!chat.ready()) { fetching=false; fetchStatus="Set chat URL/model at /ai"; return; }
   DynamicJsonDocument jd(4096);
-  jd["model"]=AI_CHAT_MODEL;
+  jd["model"]=chat.model;
   JsonArray msgs = jd.createNestedArray("messages");
   JsonObject sys=msgs.createNestedObject(); 
   sys["role"]="system"; 
@@ -1131,7 +1151,7 @@ static void newProjectGenerate() {
   
   GG_LOG_JSON("System prompt: %s", sys["content"].as<String>().c_str());
   GG_LOG_JSON("User prompt: %s", userPrompt.c_str());
-  GG_LOG_JSON("Using model: %s", AI_CHAT_MODEL);
+  GG_LOG_JSON("Using model: %s", chat.model.c_str());
   
   String payload; 
   size_t payloadSize = serializeJson(jd,payload);
@@ -1140,7 +1160,7 @@ static void newProjectGenerate() {
   
   String resp;
   GG_LOG_HTTP("Calling httpPostJSON...");
-  bool ok=httpPostJSON(AI_CHAT_URL,payload,resp);
+  bool ok=httpPostJSON(chat,payload,resp);
   GG_LOG_HTTP("httpPostJSON returned: %s, response length: %d", ok ? "SUCCESS" : "FAILED", resp.length());
   
   if(ok) { 
@@ -1405,12 +1425,10 @@ void galgameInit() {
   GG_LOG("Loaded %d projects", projects.size());
   
   // API配置检查
-  GG_LOG("API Configuration:");
-  GG_LOG("  Chat URL: %s", AI_CHAT_URL);
-  GG_LOG("  Image URL: %s", AI_IMAGE_URL);
-  GG_LOG("  Chat Model: %s", AI_CHAT_MODEL);
-  GG_LOG("  Image Model: %s", AI_IMG_MODEL);
-  GG_LOG("  API Key length: %d", strlen(AI_API_KEY));
+  AiServiceSettings chat = aiLoadSettings(AiService::Chat);
+  AiServiceSettings image = aiLoadSettings(AiService::Image);
+  GG_LOG("AI Configuration: chat=%s image=%s", chat.ready() ? "ready" : "not configured",
+         image.ready() ? "ready" : "not configured");
   GG_LOG("  Max context rounds: %d", maxContextRounds);
   
   GG_LOG("=== GalGame Initialization Complete ===");
@@ -1422,7 +1440,7 @@ void galgameEnter() {
 bool galgameActive() { return ggState!=GG_IDLE; }
 
 void galgameLeave() { ggState=GG_IDLE; }
-// 运行时不允许修改 API Key, 保留空实现以兼容旧调用
+// Deprecated API: keys are edited through the authenticated /ai WebUI.
 void galgameSetApiKey(const String &key){ (void)key; }
 static void setMaxRounds(int r){ maxContextRounds = constrain(r,1,40); galgamePersistSettings(); }
 // External wrappers
