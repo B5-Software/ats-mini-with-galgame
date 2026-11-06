@@ -39,8 +39,12 @@ AiServiceSettings aiLoadSettings(AiService service) {
 bool aiSaveSettings(AiService service, const String &url, const String &model,
                     const String &apiKey, bool clearKey,
                     const String &imageFormat, String &error) {
-  if (!validUrl(url)) {
+  if (url.length() && !validUrl(url)) {
     error = "URL must start with http(s):// and be under 200 characters";
+    return false;
+  }
+  if ((url.length() == 0) != (model.length() == 0)) {
+    error = "Supply both URL and model, or leave both empty to disable";
     return false;
   }
   if (!validText(model, 128) || !validText(apiKey, 512)) {
@@ -74,7 +78,7 @@ bool aiSaveSettings(AiService service, const String &url, const String &model,
   bool ok = storage.putString(urlKey, url) == url.length();
   ok = (storage.putString(modelKey, model) == model.length()) && ok;
   if (clearKey) {
-    ok = storage.remove(secretKey) && ok;
+    if (storage.isKey(secretKey)) ok = storage.remove(secretKey) && ok;
   } else if (apiKey.length()) {
     ok = (storage.putString(secretKey, apiKey) == apiKey.length()) && ok;
   }
