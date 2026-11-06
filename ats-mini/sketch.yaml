@@ -8,7 +8,8 @@ profiles:
     libraries:
       - PU2CLR SI4735 (2.1.8)
       - TFT_eSPI (2.5.43)
-  # 移除异步 Web 服务器相关库 (硬编码 WiFi, 不再需要配置网页)
+      - Async TCP (3.5.0)
+      - ESP Async WebServer (3.12.1)
       - NTPClient (3.2.1)
       - NimBLE-Arduino (2.3.2)
       - NuS-NimBLE-Serial (4.1.0)
@@ -25,7 +26,8 @@ profiles:
     libraries:
       - PU2CLR SI4735 (2.1.8)
       - TFT_eSPI (2.5.43)
-  # 移除异步 Web 服务器相关库 (硬编码 WiFi, 不再需要配置网页)
+      - Async TCP (3.5.0)
+      - ESP Async WebServer (3.12.1)
       - NTPClient (3.2.1)
       - NimBLE-Arduino (2.3.2)
       - NuS-NimBLE-Serial (4.1.0)
