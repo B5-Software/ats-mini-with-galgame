@@ -4,6 +4,7 @@ profiles:
     fqbn: esp32:esp32:esp32s3:CDCOnBoot=cdc,FlashSize=16M,PSRAM=opi,CPUFreq=80,USBMode=hwcdc,FlashMode=qio,PartitionScheme=custom,DebugLevel=none
     platforms:
       - platform: esp32:esp32 (3.3.0)
+        platform_index_url: https://espressif.github.io/arduino-esp32/package_esp32_index.json
     libraries:
       - PU2CLR SI4735 (2.1.8)
       - TFT_eSPI (2.5.43)
@@ -20,6 +21,7 @@ profiles:
     fqbn: esp32:esp32:esp32s3:CDCOnBoot=cdc,FlashSize=16M,PSRAM=enabled,CPUFreq=80,USBMode=hwcdc,FlashMode=qio,PartitionScheme=custom,DebugLevel=none
     platforms:
       - platform: esp32:esp32 (3.3.0)
+        platform_index_url: https://espressif.github.io/arduino-esp32/package_esp32_index.json
     libraries:
       - PU2CLR SI4735 (2.1.8)
       - TFT_eSPI (2.5.43)
