@@ -9,6 +9,13 @@
 #include "Utils.h"
 #include <WiFi.h>
 #include <HTTPClient.h>
+#include <NetworkClientSecure.h>
+
+// ESP-IDF's bundled trusted CA roots (already linked into the ESP32 Arduino core).
+extern "C" {
+  extern const uint8_t root_bundle_start[] asm("_binary_x509_crt_bundle_start");
+  extern const uint8_t root_bundle_end[] asm("_binary_x509_crt_bundle_end");
+}
 #include <LittleFS.h>
 #include <ArduinoJson.h>
 #include <Preferences.h>
@@ -486,6 +493,17 @@ static String buildSystemPrompt() {
   return sys;
 }
 
+static bool beginVerifiedHttp(HTTPClient &http, NetworkClient &plain,
+                              NetworkClientSecure &tls, const String &url) {
+  if (url.startsWith("https://")) {
+    // Never use HTTPClient.begin(url) here: ESP32 core 3.3.0's legacy
+    // overload silently sets TLS to insecure. Pin to the ESP-IDF CA bundle.
+    tls.setCACertBundle(root_bundle_start, root_bundle_end - root_bundle_start);
+    return http.begin(tls, url);
+  }
+  return url.startsWith("http://") && http.begin(plain, url);
+}
+
 static bool httpPostJSON(const AiServiceSettings &provider, const String &payload, String &response) {
   const String &url = provider.url;
   if (!provider.ready()) { response = "AI endpoint/model not configured"; return false; }
@@ -512,7 +530,9 @@ static bool httpPostJSON(const AiServiceSettings &provider, const String &payloa
   
   HTTPClient http; 
   GG_LOG_HTTP("HTTPClient begin...");
-  bool beginResult = http.begin(url);
+  NetworkClient plain;
+  NetworkClientSecure tls;
+  bool beginResult = beginVerifiedHttp(http, plain, tls, url);
   GG_LOG_HTTP("HTTPClient begin result: %d", beginResult);
   
   if(!beginResult) {
@@ -606,7 +626,10 @@ static void parseAndStoreImage(const String &json) {
         imageThumbReady=false; imageDecoded=false; jpgFullW=jpgFullH=0; jpgScaledW=jpgScaledH=0; memset(imageThumb,0xFF,sizeof(imageThumb));
         GG_LOG_HTTP("IMG url: %s", lastImageUrl.c_str());
         // Fetch binary (改进持续读取，直到 Content-Length 满足或超时)
-    HTTPClient hc; if(hc.begin(lastImageUrl)){
+    HTTPClient hc;
+    NetworkClient imagePlain;
+    NetworkClientSecure imageTls;
+    if(beginVerifiedHttp(hc, imagePlain, imageTls, lastImageUrl)){
           hc.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
           hc.addHeader("Accept","image/jpeg,application/octet-stream;q=0.9,*/*;q=0.5");
           // 某些服务需要鉴权才能访问生成文件
