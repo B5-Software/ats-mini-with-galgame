@@ -626,9 +626,9 @@ static void parseAndStoreImage(const String &json) {
         imageThumbReady=false; imageDecoded=false; jpgFullW=jpgFullH=0; jpgScaledW=jpgScaledH=0; memset(imageThumb,0xFF,sizeof(imageThumb));
         GG_LOG_HTTP("IMG url: %s", lastImageUrl.c_str());
         // Fetch binary (改进持续读取，直到 Content-Length 满足或超时)
-    HTTPClient hc;
     NetworkClient imagePlain;
     NetworkClientSecure imageTls;
+    HTTPClient hc;
     if(beginVerifiedHttp(hc, imagePlain, imageTls, lastImageUrl)){
           hc.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
           hc.addHeader("Accept","image/jpeg,application/octet-stream;q=0.9,*/*;q=0.5");
