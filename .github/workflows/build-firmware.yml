@@ -1,11 +1,18 @@
 name: Build ESP32-S3 firmware
 
 on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "ats-mini/**"
+      - ".github/workflows/build-firmware.yml"
+      - "tests/**"
   push:
     branches: [main]
     paths:
       - "ats-mini/**"
       - ".github/workflows/build-firmware.yml"
+      - "tests/**"
   workflow_dispatch:
 
 permissions:
@@ -38,6 +45,9 @@ jobs:
           arduino-cli core update-index
           arduino-cli lib update-index
 
+      - name: Check AI settings regression contracts
+        run: python3 -m unittest discover -s tests -v
+
       - name: Compile from the pinned sketch profile
         env:
           PROFILE: ${{ matrix.profile }}
@@ -67,7 +77,9 @@ jobs:
           ats-mini.ino.bin is the application binary (OTA / app-only).
           Other *.bin files (if present) support serial flashing.
           Never flash a 16 MB image onto a receiver with incompatible hardware.
-          The public source intentionally contains no SiliconFlow API key.
+          Configure AI providers at http://10.1.1.1/ai (AP mode) or http://atsmini.local/ai.
+          The AP and admin password is generated per device; read it on the receiver.
+          No API keys are embedded in the public firmware.
           Build is automated; hardware functionality has not been verified.
           EOF
           ls -lh dist/
