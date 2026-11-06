@@ -37,6 +37,7 @@ firmware**; a freshly flashed receiver must be configured before cloud AI works.
    Blank API key fields mean **keep existing key**. Use *Remove saved key* to delete one.
 
 **Security:** Never post your API keys in GitHub Issues or repository files.
+AI provider requests validate HTTPS certificates against the ESP-IDF trusted CA roots.
 The device's WebUI uses HTTP Basic authentication (not HTTPS); use it only
 on a trusted local WiFi/AP and never expose port 80 to the public Internet.
 The receiver's AP uses a unique generated WPA2 password, not an open network.
