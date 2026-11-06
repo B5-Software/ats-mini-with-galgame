@@ -58,3 +58,13 @@ This project is based on and includes code from:
 * G8PTN, Dave:       https://github.com/G8PTN/ATS_MINI
 
 All original copyrights and licenses are retained.
+
+## Prebuilt firmware (GitHub Actions)
+
+ESP32-S3 firmware is compiled automatically on pushes to `main`, and can also be compiled manually from the [Build ESP32-S3 firmware workflow](https://github.com/B5-Software/ats-mini-with-galgame/actions/workflows/build-firmware.yml).
+
+1. Open the latest **successful** workflow run.
+2. Download either `ats-mini-galgame-ospi-16MB` (Octal PSRAM) or `ats-mini-galgame-qspi-16MB` (Quad PSRAM) from **Artifacts**. GitHub sign-in may be required to download Actions artifacts.
+3. Extract the archive. It includes the application `ats-mini.ino.bin`, any available bootloader/partition binaries, and SHA-256 checksums.
+
+**Hardware and API caveats:** The binaries target ESP32-S3 hardware with **16 MB Flash**. Choose the correct PSRAM configuration; the firmware has not been verified on physical receiver hardware. The public source intentionally ships with empty AI API configuration values in `ats-mini/AiConfig.h`; AI GalGame cloud features will not work without supplying your own configuration and rebuilding. Do not put private Wi-Fi or API credentials in a public Actions build.
